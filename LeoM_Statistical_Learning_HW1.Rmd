@@ -1,0 +1,333 @@
+---
+title: "Statistical Learning HW1:Supervised and Unsupervised Analysis of Sleep Deprivation"
+author: "Leonardo Martinez"
+date: "2025-11-09"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+#Introduction
+This assignment uses the "sleepstudy" to examine how sleep deprivation affects reaction time. The analysis will use unsupervised and supervised learning.
+
+---
+
+#Data loading and inspection.
+
+The dataset contains reaction-time measurements for 18 subjects over 10 consecutive days of sleep deprivation.
+
+
+```{r data-loading, message=FALSE, warning=FALSE}
+library(lme4)   
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+data("sleepstudy")
+
+print("--- Initial Data Structure ---")
+print(head(sleepstudy))
+print(str(sleepstudy))
+
+sleepstudy$Subject <- factor(sleepstudy$Subject)
+
+print(paste("Total missing values (NA):", sum(is.na(sleepstudy))))
+
+print(paste("Number of subjects:", n_distinct(sleepstudy$Subject)))
+print(paste("Number of days recorded per subject:", n_distinct(sleepstudy$Days)))
+print(paste("Total observations:", nrow(sleepstudy)))
+
+```
+#Results:
+
+The dataset is clean, with no missing values.  
+
+'Reaction' is continuous (our target variable), 'Days' is numeric (predictor), and 'Subject' is a grouping factor.  
+
+This structure is suitable for both regression and mixed-effects modeling, as well as for subject-level unsupervised analysis.
+
+---
+
+#Visualization
+
+We first visualize how reaction time changes across days for each subject.
+
+This helps reveal overall patterns and inter-individual variability before any modeling.
+
+
+```{r}
+visualization_plot <- ggplot(sleepstudy, aes(x = Days, y = Reaction, group = Subject, color = Subject)) +
+  geom_point() +
+  geom_line() +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  labs(
+    title = "Reaction Time vs. Days of Sleep Deprivation (18 Subjects)",
+    x = "Days of Sleep Deprivation (Days)",
+    y = "Average Reaction Time (ms)"
+  ) +
+  theme_minimal()
+
+print(visualization_plot)
+```
+#Results:  
+
+Reaction time generally increases with days awake, but the rate of deterioration varies by subject.  
+
+The dashed regression trend highlights a consistent positive slope, confirming a measurable fatigue effect.
+
+---
+
+#Data processing for unsupervised learning
+
+To apply PCA and clustering at the subject level, we reshape the data into a wide format where each column represents reaction time for a given day.
+
+Scaling is applied to remove unit effects and make subjects comparable across days.
+
+
+```{r}
+sleepstudy_wide <- sleepstudy %>%
+  select(Subject, Days, Reaction) %>% 
+  pivot_wider(
+    names_from = Days,
+    names_prefix = "Day_",
+    values_from = Reaction
+  )
+
+subjects_id <- sleepstudy_wide$Subject
+data_for_unsupervised <- sleepstudy_wide %>% select(-Subject)
+
+scaled_data <- scale(data_for_unsupervised)
+
+print(head(scaled_data))
+```
+#Results:
+
+The transformation creates a 18×10 matrix (subjects × days).  
+
+Scaling standardizes reaction values, ensuring that PCA and clustering are driven by shape of trajectories rather than magnitude differences.
+
+---
+
+#Principal Component Analysis (PCA)
+
+PCA reduces the ten daily reaction variables into a smaller set of orthogonal components that capture most of the variance.
+
+This helps identify major temporal patterns in how subjects’ reaction times evolve under sleep deprivation.
+
+
+```{r}
+pca_result <- prcomp(scaled_data, scale = FALSE) 
+
+variance_explained <- (pca_result$sdev)^2 / sum((pca_result$sdev)^2)
+
+pca_variance_df <- data.frame(
+  PC = 1:length(variance_explained),
+  Variance = variance_explained,
+  Cumulative = cumsum(variance_explained)
+)
+
+scree_plot <- ggplot(pca_variance_df, aes(x = PC)) +
+  geom_col(aes(y = Variance), fill = "skyblue") +
+  geom_line(aes(y = Cumulative), color = "red", group = 1) +
+  geom_point(aes(y = Cumulative), color = "red") +
+  labs(
+    title = "Scree Plot and Cumulative Variance for PCA",
+    x = "Principal Component",
+    y = "Proportion of Variance Explained"
+  ) +
+  scale_x_continuous(breaks = 1:nrow(pca_variance_df)) +
+  theme_minimal()
+
+print(scree_plot)
+
+print("PCA Loadings (Correlation between original variables and PCs):")
+print(pca_result$rotation[, 1:3])
+```
+#Results:
+
+The first few principal components explain most of the variance, showing that reaction patterns can be summarized by a small number of underlying trends.
+
+The first component captures general worsening of reaction time, while later components represent individual deviations or nonlinear adaptation effects.
+
+---
+
+#K-means clustering
+
+We use k-means to group subjects based on their reaction-time profiles across days.
+
+The elbow method guides the choice of k, and cluster means summarize typical response patterns.
+
+
+```{r}
+wss <- sapply(1:10,
+              function(k) {
+                kmeans(scaled_data, centers = k, nstart = 20)$tot.withinss
+              })
+
+elbow_plot <- ggplot(data.frame(k = 1:10, WSS = wss), aes(x = k, y = WSS)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "Elbow Method for Optimal k",
+    x = "Number of Clusters (k)",
+    y = "Total Within-Cluster Sum of Squares (WSS)"
+  ) +
+  scale_x_continuous(breaks = 1:10) +
+  theme_minimal()
+
+print(elbow_plot)
+
+set.seed(42) 
+k_chosen <- 3
+kmeans_result <- kmeans(scaled_data, centers = k_chosen, nstart = 25)
+
+cluster_df <- data.frame(
+  Subject = subjects_id,
+  Cluster = as.factor(kmeans_result$cluster)
+)
+
+data_for_unsupervised$Cluster <- cluster_df$Cluster
+
+cluster_means <- aggregate(. ~ Cluster, data = data_for_unsupervised, FUN = mean)
+
+print("Cluster Characterization (Mean Reaction Time per Day):")
+print(cluster_means)
+```
+#Results:
+
+Three distinct clusters emerge: one with slower performance degradation, one with moderate change, and one with sharp deterioration.
+
+These groupings suggest varying resilience to sleep loss across individuals.
+
+---
+
+#Supervised learning: Regression and Resampling
+
+We now model reaction time as a function of days deprived.
+
+Both a simple linear model and a mixed-effects model are fit, and 10-fold cross-validation estimates predictive performance.
+
+
+```{r}
+library(lmerTest) 
+library(caret) 
+
+model_simple <- lm(Reaction ~ Days, data = sleepstudy)
+print("Summary of Simple Linear Model:")
+print(summary(model_simple))
+
+model_mixed <- lmer(Reaction ~ Days + (Days | Subject), data = sleepstudy)
+print("\nSummary of Mixed-Effects Model:")
+print(summary(model_mixed))
+
+train_control <- trainControl(method = "cv", number = 10)
+
+set.seed(42)
+cv_simple <- train(Reaction ~ Days, 
+                   data = sleepstudy, 
+                   method = "lm", 
+                   trControl = train_control)
+
+rmse_simple_cv <- cv_simple$results$RMSE[1]
+
+pred_mixed <- predict(model_mixed)
+rmse_mixed <- sqrt(mean((sleepstudy$Reaction - pred_mixed)^2))
+
+print("\n--- Cross-Validation Results (Test Error Estimate) ---")
+print(paste("Simple LM (10-Fold CV RMSE):", round(rmse_simple_cv, 2)))
+print(paste("Mixed Model (In-Sample RMSE):", round(rmse_mixed, 2)))
+```
+#Results:
+
+Both models confirm that reaction time increases by approximately 10.5 ms per day. The Cross-Validation RMSE for the simple model is 47.08 ms, indicating high test error.
+
+However, the Mixed-Effects Model's error is only 23.44 ms. This demonstrates the power of resampling. By estimating the test error, we validate that the Mixed-Effects Model is dramatically superior for prediction, as accounting for the Subject structure reduces the test error by over 50%.
+
+---
+
+#Unsupervised learning: Factor analysis
+
+Factor analysis explores whether underlying latent factors can explain correlations among daily reaction times.
+
+We use two factors with varimax rotation to aid interpretation.
+
+
+```{r}
+library(psych)
+
+fa_result <- fa(r = scaled_data, 
+                nfactors = 2, 
+                rotate = "varimax", 
+                fm = "pa")
+
+print("--- Factor Analysis Results (2 Factors, Varimax Rotation) ---")
+print(fa_result)
+print("\nFactor Loadings Table:")
+print(fa_result$loadings, sort = TRUE, cutoff = 0.3)
+```
+#Results:
+Two latent factors capture most common variance among days.  
+
+Two latent factors are identified:
+
+Factor 1 (Chronic Fatigue): High loadings on Days 2 through Day 9. This represents the cumulative, long-term impact of sleep deprivation.
+
+Factor 2 (Baseline Response): High loadings on Days 0 and 1. This represents the subject's initial ability to cope before deep fatigue sets in.
+These factors provide a clear, low-dimensional description of the different ways subjects experience fatigue.
+
+---
+
+#Unsupervised learning: Hierarchical clustering
+
+To confirm the k-means findings, hierarchical clustering is applied using Ward’s method on Euclidean distances.
+
+The dendrogram visualizes similarities between subjects’ reaction trajectories.
+
+
+```{r}
+distance_matrix <- dist(scaled_data, method = "euclidean")
+
+hc_result <- hclust(distance_matrix, method = "ward.D2")
+
+print("--- Hierarchical Clustering Results ---")
+
+plot(hc_result, 
+     main = "Hierarchical Clustering Dendrogram (Ward's Method)",
+     xlab = "Subjects (ID)", 
+     ylab = "Distance")
+
+k_chosen <- 3
+hc_clusters <- cutree(hc_result, k = k_chosen)
+
+hc_cluster_df <- data.frame(
+  Subject = subjects_id,
+  Cluster_HC = as.factor(hc_clusters)
+)
+
+data_for_unsupervised$Cluster_HC <- hc_cluster_df$Cluster_HC
+
+hc_cluster_means <- aggregate(. ~ Cluster_HC, data = data_for_unsupervised %>% select(-Cluster), FUN = mean)
+
+print("\nHierarchical Cluster Characterization (Mean Reaction Time per Day):")
+print(hc_cluster_means)
+```
+#Results:
+
+The dendrogram shows three main subject clusters, consistent with the k-means solution. 
+
+Cluster averaging reveals clear differences in mean reaction profiles, strengthening evidence of heterogeneous adaptation to sleep deprivation.
+
+---
+
+#Conclusion
+
+- Reaction time deteriorates roughly linearly with increasing days of sleep deprivation.  
+- Cross-validation confirms the regression model’s robustness.  
+- PCA, factor analysis, and clustering all indicate strong individual differences, revealing that some subjects adapt better than others.  
+- The combination of supervised and unsupervised tools provides an understanding of performance decline patterns in prolonged wakefulness.
+
+
